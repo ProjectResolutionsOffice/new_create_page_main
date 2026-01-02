@@ -12,3 +12,4 @@ requests
 passlib[bcrypt]
 Pillow
 python-jose[cryptography]
+PySide6
