@@ -10,4 +10,5 @@ python-dotenv
 python-multipart
 requests
 passlib[bcrypt]
+Pillow
 python-jose[cryptography]
