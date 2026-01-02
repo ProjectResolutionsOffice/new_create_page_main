@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+gunicorn
+pydantic
+google-cloud-aiplatform
+google-cloud-storage
+supabase
+python-dotenv
+python-multipart
+requests

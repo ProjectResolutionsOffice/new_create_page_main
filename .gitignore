@@ -1,0 +1,16 @@
+# .gitignore 내용
+
+# 1. 보안 파일 (절대 올리면 안 됨!)
+.env
+generate_keys.py
+new-create-page-b9351f1b956b.json
+google_key_base64.txt
+*.pem
+
+# 2. 파이썬 임시 파일 (올릴 필요 없음)
+__pycache__/
+*.pyc
+venv/
+.venv/
+.idea/
+.vscode/
