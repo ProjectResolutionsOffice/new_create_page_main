@@ -121,6 +121,9 @@ class SignedUrlResponse(BaseModel):
     signed_url: str
     public_url: str
 
+class AgreeRequest(BaseModel):
+    username: str
+
 # --- API 엔드포인트 ---
 
 @app.post("/api/storage/request-upload-url", response_model=SignedUrlResponse)
@@ -252,6 +255,28 @@ def login_for_access_token(form_data: user_schemas.UserLogin):
         "username": user['email'],             # 이메일을 username으로 전달
         "agreedseq": user.get('agreedseq', 0)  # DB 값 전달 (없으면 0)
     }
+
+@app.post("/api/agree")
+@app.post("/api/agree")
+def agree_terms(req: AgreeRequest):
+    """
+    사용자의 약관 동의 상태(agreedseq)를 1로 변경합니다.
+    db: Session 같은 건 Supabase에서 필요 없습니다!
+    """
+    try:
+        # Supabase에 바로 업데이트 요청을 날립니다.
+        # 해석: 'pro_new_page' 테이블에서, email이 req.username과 같은 사람을 찾아, agreedseq를 1로 바꿔라.
+        response = auth_service.supabase.table('pro_new_page').update({'agreedseq': 1}).eq('email', req.username).execute()
+        
+        # 업데이트된 데이터가 없으면(유저가 없으면) 에러 처리
+        if not response.data:
+            raise HTTPException(status_code=404, detail="사용자를 찾을 수 없거나 업데이트에 실패했습니다.")
+            
+        return {"message": "약관 동의가 완료되었습니다."}
+
+    except Exception as e:
+        print(f"서버 에러 발생: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/users/me", response_model=user_schemas.UserInfo)
 def read_users_me(current_user: dict = Depends(auth_service.get_current_user)):
