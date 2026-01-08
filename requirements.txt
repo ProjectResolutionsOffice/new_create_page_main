@@ -10,6 +10,7 @@ python-dotenv
 python-multipart
 requests
 passlib[bcrypt]
-bcrypt
-python-jose[cryptography]
 Pillow
+python-jose[cryptography]
+PySide6
+bcrypt==4.0.1
