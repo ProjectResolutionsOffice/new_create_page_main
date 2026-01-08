@@ -466,3 +466,27 @@ def check_app_version():
         
         "force_update": True # True면 강제 업데이트 권장 알림
     }
+
+@app.get("/api/user/info")
+def get_user_info(email: str):
+    """
+    사용자의 이메일을 받아서, 남은 횟수(remaining_generations)와 플랜 정보를 돌려줍니다.
+    """
+    try:
+        # Supabase에서 사용자 조회
+        response = auth_service.supabase.table('pro_new_page').select('*').eq('email', email).execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
+        
+        user_data = response.data[0]
+        
+        return {
+            "email": user_data['email'],
+            "remaining_generations": user_data.get('remaining_generations', 0),
+            "plan_type": user_data.get('plan_type', 'free')
+        }
+        
+    except Exception as e:
+        print(f"사용자 정보 조회 실패: {e}")
+        raise HTTPException(status_code=500, detail="서버 오류 발생")
