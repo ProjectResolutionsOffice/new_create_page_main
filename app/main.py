@@ -36,8 +36,8 @@ from fastapi.templating import Jinja2Templates # HTML 템플릿 도구
 from fastapi import Request
 from fastapi.responses import HTMLResponse
 
-IAMPORT_API_KEY = "1717330715188088"
-IAMPORT_API_SECRET = "OZI49saJ03keDPa6p26ZEPyBT4KPeIEFaw1i7x75HYn5gfoUYF4n6TSvGCnPLhSG9gjMQwZ4izGAiLb6"
+IAMPORT_API_KEY = os.getenv("IAMPORT_API_KEY")
+IAMPORT_API_SECRET = os.getenv("IAMPORT_API_SECRET")
 # Iamport 객체 생성 (이 친구가 포트원과 통신을 담당합니다)
 iamport = Iamport(imp_key=IAMPORT_API_KEY, imp_secret=IAMPORT_API_SECRET)
 # HTML 파일들이 위치할 폴더 지정 (잠시 후 만들 겁니다)
@@ -289,7 +289,11 @@ def agree_terms(req: AgreeRequest):
 
     except Exception as e:
         print(f"서버 에러 발생: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # 2. 사용자에게는 '친절하고 모호한' 메시지만 전달
+        raise HTTPException(
+            status_code=500, 
+            detail="서버 내부 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+        )
 
 @app.get("/api/users/me", response_model=user_schemas.UserInfo)
 def read_users_me(current_user: dict = Depends(auth_service.get_current_user)):
@@ -567,7 +571,15 @@ def verify_payment(req: PaymentVerifyRequest):
 
     except Iamport.ResponseError as e:
         print(f"포트원 통신 오류: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        # 2. 사용자에게는 '친절하고 모호한' 메시지만 전달
+        raise HTTPException(
+            status_code=500, 
+            detail="서버 내부 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+        )
     except Exception as e:
         print(f"결제 검증 중 오류: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # 2. 사용자에게는 '친절하고 모호한' 메시지만 전달
+        raise HTTPException(
+            status_code=500, 
+            detail="서버 내부 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+        )
