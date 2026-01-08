@@ -29,6 +29,19 @@ from .schemas import generation as generation_schemas
 from . import validator
 
 from fastapi.middleware.cors import CORSMiddleware
+
+# 1. 라이브러리 임포트 (상단에 추가)
+from iamport import Iamport # 설치한 라이브러리 불러오기
+from fastapi.templating import Jinja2Templates # HTML 템플릿 도구
+from fastapi import Request
+from fastapi.responses import HTMLResponse
+
+IAMPORT_API_KEY = "1717330715188088"
+IAMPORT_API_SECRET = "OZI49saJ03keDPa6p26ZEPyBT4KPeIEFaw1i7x75HYn5gfoUYF4n6TSvGCnPLhSG9gjMQwZ4izGAiLb6"
+# Iamport 객체 생성 (이 친구가 포트원과 통신을 담당합니다)
+iamport = Iamport(imp_key=IAMPORT_API_KEY, imp_secret=IAMPORT_API_SECRET)
+# HTML 파일들이 위치할 폴더 지정 (잠시 후 만들 겁니다)
+templates = Jinja2Templates(directory="templates")
 # =====================================================================
 # ✅ [수정] 구글 클라우드 인증 (로컬 파일 vs 프로덕션 Base64 자동 감지)
 # =====================================================================
@@ -462,3 +475,99 @@ def check_app_version():
         
         "force_update": True # True면 강제 업데이트 권장 알림
     }
+
+# ---------------------------------------------------------
+# [결제 시스템] 1. 결제 페이지 보여주기 (GET /payment)
+# ---------------------------------------------------------
+@app.get("/payment", response_class=HTMLResponse)
+def payment_page(request: Request, plan: str, email: str):
+    """
+    클라이언트가 요청하면 결제창(HTML)을 렌더링해서 보내줍니다.
+    예: http://서버주소/payment?plan=Starter&email=user@test.com
+    """
+    # 1. 플랜별 가격 및 충전량 설정
+    plan_info = {
+        "Starter": {"price": 10000, "amount": 50},
+        "Standard": {"price": 25000, "amount": 150},
+        "Pro": {"price": 70000, "amount": 500}
+    }
+
+    # 2. 유효한 플랜인지 확인
+    if plan not in plan_info:
+        return HTMLResponse(content="<h1>잘못된 플랜 요청입니다.</h1>", status_code=400)
+
+    selected_plan = plan_info[plan]
+
+    # 3. HTML 파일에 데이터 채워서 보내기 (Jinja2)
+    return templates.TemplateResponse("payment.html", {
+        "request": request,
+        "plan_name": plan,
+        "price": selected_plan["price"],
+        "amount": selected_plan["amount"],
+        "email": email
+    })
+
+
+# ---------------------------------------------------------
+# [결제 시스템] 2. 결제 검증 및 충전 처리 (POST /api/payment/verify)
+# ---------------------------------------------------------
+# 요청 데이터 형식 정의
+class PaymentVerifyRequest(BaseModel):
+    imp_uid: str
+    merchant_uid: str
+    email: str
+    plan_name: str
+
+@app.post("/api/payment/verify")
+def verify_payment(req: PaymentVerifyRequest):
+    """
+    프론트엔드에서 결제 완료 신호가 오면, 포트원 서버에 조회해서
+    '진짜 결제된 게 맞는지' 확인하고 DB를 충전합니다.
+    """
+    try:
+        # 1. 포트원 서버에 실제 결제 정보 조회 (API Key 사용)
+        # (iamport 라이브러리가 알아서 토큰 발급받고 조회해줍니다)
+        response = iamport.find(imp_uid=req.imp_uid)
+        
+        # 2. 결제 상태 확인
+        if response['status'] != 'paid':
+            raise HTTPException(status_code=400, detail="결제가 완료되지 않았습니다.")
+
+        # 3. 가격 검증 (해킹 방지: 클라이언트가 가격을 조작했는지 확인)
+        expected_price = 0
+        if req.plan_name == "Starter": expected_price = 10000
+        elif req.plan_name == "Standard": expected_price = 25000
+        elif req.plan_name == "Pro": expected_price = 70000
+
+        if response['amount'] != expected_price:
+             # 결제 취소 로직을 여기에 추가할 수도 있음
+             raise HTTPException(status_code=400, detail="결제 금액이 일치하지 않습니다. (위조 위험)")
+
+        # 4. 검증 통과! DB에 횟수 충전 (기존 로직 재사용)
+        # 4-1. 현재 횟수 조회
+        user_res = auth_service.supabase.table('pro_new_page').select('remaining_generations').eq('email', req.email).execute()
+        if not user_res.data:
+            raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
+        
+        current_gen = user_res.data[0].get('remaining_generations', 0)
+        
+        # 4-2. 충전량 계산
+        add_amount = 50 # 기본값
+        if req.plan_name == "Standard": add_amount = 150
+        elif req.plan_name == "Pro": add_amount = 500
+
+        # 4-3. DB 업데이트
+        auth_service.supabase.table('pro_new_page').update({
+            'remaining_generations': current_gen + add_amount,
+            'plan_type': req.plan_name,
+            'updated_at': "now()"
+        }).eq('email', req.email).execute()
+
+        return {"status": "success", "message": "충전이 완료되었습니다.", "new_total": current_gen + add_amount}
+
+    except Iamport.ResponseError as e:
+        print(f"포트원 통신 오류: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"결제 검증 중 오류: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
