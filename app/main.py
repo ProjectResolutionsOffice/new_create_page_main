@@ -459,10 +459,10 @@ def check_app_version():
     새 버전을 배포할 때마다 아래 'version'과 'download_url'을 수정하면 됩니다.
     """
     return {
-        "version": "0.0.2",  # 🔥 배포할 최신 버전 (version.txt보다 높아야 업데이트됨)
+        "version": "0.0.3",  # 🔥 배포할 최신 버전 (version.txt보다 높아야 업데이트됨)
         
         # 👇 [중요] 아까 GitHub Releases에서 복사한 '링크 주소'를 여기에 넣으세요!
-        "download_url": "https://github.com/ProjectResolutionsOffice/new_create_page_main/releases/download/v0.0.2/update_v0.0.2.zip",
+        "download_url": "https://github.com/ProjectResolutionsOffice/new_create_page_main/releases/download/v0.0.3/update_v0.0.3.zip",
         
         "force_update": True # True면 강제 업데이트 권장 알림
     }
