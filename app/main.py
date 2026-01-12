@@ -5,7 +5,7 @@ import uuid
 import json
 import base64 # ✅ [추가] Base64 디코딩용
 from google.oauth2 import service_account # ✅ [추가] 구글 인증 객체 생성용
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Header
 from dotenv import load_dotenv
 load_dotenv() # 최우선 로드
 
@@ -99,6 +99,16 @@ app = FastAPI(
     description="사용자 인증, GPT/MCP 중계, 요금제 관리를 위한 API 서버",
     version="1.0.0",
 )
+API_CLIENT_SECRET = os.getenv("API_CLIENT_SECRET", "PRO")
+
+async def verify_client_header(x_client_secret: str = Header(None)):
+    """
+    클라이언트가 헤더에 올바른 '암구호'를 붙였는지 검사합니다.
+    없거나 틀리면 403 (접근 금지) 에러를 냅니다.
+    """
+    if x_client_secret != API_CLIENT_SECRET:
+        print(f"🚨 [보안 경고] 잘못된 시크릿 키 접근 시도: {x_client_secret}")
+        raise HTTPException(status_code=403, detail="허용되지 않은 클라이언트 접근입니다.")
 
 # --- CORS 설정 (변경 없음) ---
 origins = [
@@ -221,7 +231,7 @@ def register_user(user_data: user_schemas.UserCreate):
     return {"message": "회원가입이 성공적으로 완료되었습니다."}
 
 # 1. response_model을 'Token'에서 'LoginResponse'로 변경
-@app.post("/api/auth/login", response_model=user_schemas.LoginResponse)
+@app.post("/api/auth/login", response_model=user_schemas.LoginResponse, dependencies=[Depends(verify_client_header)])
 def login_for_access_token(form_data: user_schemas.UserLogin):
     
     # (Supabase 조회 로직 - 그대로 유지)
@@ -291,7 +301,7 @@ def read_users_me(current_user: dict = Depends(auth_service.get_current_user)):
     }
 # --- (로컬 GenerationRequest 클래스 정의 삭제됨) ---
 
-@app.post("/api/generate/page")
+@app.post("/api/generate/page", dependencies=[Depends(verify_client_header)])
 def generate_page(
     request_data: generation_schemas.GenerationRequest,
     current_user: dict = Depends(auth_service.get_current_user)
