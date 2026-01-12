@@ -296,18 +296,31 @@ def generate_page(
     request_data: generation_schemas.GenerationRequest,
     current_user: dict = Depends(auth_service.get_current_user)
 ):
+    # 1. 잔액 확인
     if current_user['remaining_generations'] <= 0:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail="남아있는 생성 횟수가 없습니다. 횟수를 충전해주세요."
         )
 
+    # 2. [보안] 선차감 (먹튀 방지)
+    # 먼저 깎고 시작합니다. 생성 실패하면 돌려줍니다.
     new_credits = current_user['remaining_generations'] - 1
-    
+    try:
+        auth_service.supabase.table('pro_new_page').update({'remaining_generations': new_credits}).eq('id', current_user['id']).execute()
+        print(f"💰 [결제] 횟수 선차감 완료 ({current_user['email']}: {new_credits}회 남음)")
+    except Exception as e:
+        print(f"🚨 DB 업데이트 실패: {e}")
+        raise HTTPException(status_code=500, detail="서버 오류로 횟수 차감에 실패했습니다.")
+
+    # 3. AI 서비스 초기화 확인
     if not gemini_model:
+        # (중요) AI가 안 되면 차감한 거 돌려줘야 함 (환불)
+        refund_credits = new_credits + 1
+        auth_service.supabase.table('pro_new_page').update({'remaining_generations': refund_credits}).eq('id', current_user['id']).execute()
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Vertex AI (Gemini) 모델이 초기화되지 않았습니다."
+            detail="AI 모델이 초기화되지 않아 횟수가 자동 환불되었습니다."
         )
 
     try:
@@ -421,29 +434,24 @@ def generate_page(
         # --- (로깅 추가 끝) ---
         
         print("✅ Validator 자동 보정 완료!")
-        
-        # 2. 횟수 차감 (AI 호출 및 Validator 보정 성공 후)
-        try:
-            auth_service.supabase.table('pro_new_page').update({'remaining_generations': new_credits}).eq('id', current_user['id']).execute()
-            print(f"✅ 횟수 차감 완료. 남은 횟수: {new_credits}")
-        except Exception as e:
-            print(f"🚨 경고: AI 생성은 성공했으나 DB 횟수 차감에 실패했습니다: {e}")
-            pass
-
+    
+        # 5. 최종 결과 반환
+        print("✅ 자동 보정된 layout_data 포함하여 클라이언트에 응답 전송")
+        return {
+            "message": "JSON 레이아웃 생성이 성공적으로 완료되었습니다.",
+            "layout_data": fixed_layout,
+            "remaining_generations": new_credits
+        }
     except Exception as e:
-        print(f"🚨 오류: AI 응답 처리 또는 Validator 실행 중 예외 발생: {e}")
+        # 🚨 [보안] 생성 중 에러 발생 시 '자동 환불'
+        print(f"🚨 생성 실패로 인한 환불 처리: {e}")
+        refund_credits = new_credits + 1
+        auth_service.supabase.table('pro_new_page').update({'remaining_generations': refund_credits}).eq('id', current_user['id']).execute()
+        
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"AI 서비스 호출 또는 응답 처리 중 오류가 발생했습니다"
+            detail="AI 생성 중 오류가 발생하여 횟수가 자동 환불되었습니다."
         )
-    
-    # 5. 최종 결과 반환
-    print("✅ 자동 보정된 layout_data 포함하여 클라이언트에 응답 전송")
-    return {
-        "message": "JSON 레이아웃 생성이 성공적으로 완료되었습니다.",
-        "layout_data": fixed_layout,
-        "remaining_generations": new_credits
-    }
 # ==========================================
 # 👇 [신규] 앱 자동 업데이트를 위한 API 엔드포인트
 # ==========================================
@@ -467,26 +475,14 @@ def check_app_version():
         "force_update": True # True면 강제 업데이트 권장 알림
     }
 
-@app.get("/api/user/info")
-def get_user_info(email: str):
+@app.get("/api/user/info", response_model=user_schemas.UserInfo)
+def get_user_info(current_user: dict = Depends(auth_service.get_current_user)):
     """
-    사용자의 이메일을 받아서, 남은 횟수(remaining_generations)와 플랜 정보를 돌려줍니다.
+    [보안 업데이트] 이제 이메일 파라미터 없이, 토큰(로그인 정보)으로 내 정보를 조회합니다.
+    남의 정보를 훔쳐볼 수 없습니다.
     """
-    try:
-        # Supabase에서 사용자 조회
-        response = auth_service.supabase.table('pro_new_page').select('*').eq('email', email).execute()
-        
-        if not response.data:
-            raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
-        
-        user_data = response.data[0]
-        
-        return {
-            "email": user_data['email'],
-            "remaining_generations": user_data.get('remaining_generations', 0),
-            "plan_type": user_data.get('plan_type', 'free')
-        }
-        
-    except Exception as e:
-        print(f"사용자 정보 조회 실패: {e}")
-        raise HTTPException(status_code=500, detail="서버 오류 발생")
+    return {
+        "email": current_user['email'],
+        "remaining_generations": current_user['remaining_generations'],
+        "plan_type": current_user.get('plan_type', 'free')
+    }
