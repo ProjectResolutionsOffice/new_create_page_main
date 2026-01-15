@@ -5,7 +5,7 @@ import uuid
 import json
 import base64 # ✅ [추가] Base64 디코딩용
 from google.oauth2 import service_account # ✅ [추가] 구글 인증 객체 생성용
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Header
 from dotenv import load_dotenv
 load_dotenv() # 최우선 로드
 
@@ -99,6 +99,16 @@ app = FastAPI(
     description="사용자 인증, GPT/MCP 중계, 요금제 관리를 위한 API 서버",
     version="1.0.0",
 )
+API_CLIENT_SECRET = os.getenv("API_CLIENT_SECRET", "PRO")
+
+async def verify_client_header(x_client_secret: str = Header(None)):
+    """
+    클라이언트가 헤더에 올바른 '암구호'를 붙였는지 검사합니다.
+    없거나 틀리면 403 (접근 금지) 에러를 냅니다.
+    """
+    if x_client_secret != API_CLIENT_SECRET:
+        print(f"🚨 [보안 경고] 잘못된 시크릿 키 접근 시도: {x_client_secret}")
+        raise HTTPException(status_code=403, detail="허용되지 않은 클라이언트 접근입니다.")
 
 # --- CORS 설정 (변경 없음) ---
 origins = [
@@ -221,7 +231,7 @@ def register_user(user_data: user_schemas.UserCreate):
     return {"message": "회원가입이 성공적으로 완료되었습니다."}
 
 # 1. response_model을 'Token'에서 'LoginResponse'로 변경
-@app.post("/api/auth/login", response_model=user_schemas.LoginResponse)
+@app.post("/api/auth/login", response_model=user_schemas.LoginResponse, dependencies=[Depends(verify_client_header)])
 def login_for_access_token(form_data: user_schemas.UserLogin):
     
     # (Supabase 조회 로직 - 그대로 유지)
@@ -291,23 +301,36 @@ def read_users_me(current_user: dict = Depends(auth_service.get_current_user)):
     }
 # --- (로컬 GenerationRequest 클래스 정의 삭제됨) ---
 
-@app.post("/api/generate/page")
+@app.post("/api/generate/page", dependencies=[Depends(verify_client_header)])
 def generate_page(
     request_data: generation_schemas.GenerationRequest,
     current_user: dict = Depends(auth_service.get_current_user)
 ):
+    # 1. 잔액 확인
     if current_user['remaining_generations'] <= 0:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail="남아있는 생성 횟수가 없습니다. 횟수를 충전해주세요."
         )
 
+    # 2. [보안] 선차감 (먹튀 방지)
+    # 먼저 깎고 시작합니다. 생성 실패하면 돌려줍니다.
     new_credits = current_user['remaining_generations'] - 1
-    
+    try:
+        auth_service.supabase.table('pro_new_page').update({'remaining_generations': new_credits}).eq('id', current_user['id']).execute()
+        print(f"💰 [결제] 횟수 선차감 완료 ({current_user['email']}: {new_credits}회 남음)")
+    except Exception as e:
+        print(f"🚨 DB 업데이트 실패: {e}")
+        raise HTTPException(status_code=500, detail="서버 오류로 횟수 차감에 실패했습니다.")
+
+    # 3. AI 서비스 초기화 확인
     if not gemini_model:
+        # (중요) AI가 안 되면 차감한 거 돌려줘야 함 (환불)
+        refund_credits = new_credits + 1
+        auth_service.supabase.table('pro_new_page').update({'remaining_generations': refund_credits}).eq('id', current_user['id']).execute()
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Vertex AI (Gemini) 모델이 초기화되지 않았습니다."
+            detail="AI 모델이 초기화되지 않아 횟수가 자동 환불되었습니다."
         )
 
     try:
@@ -421,29 +444,24 @@ def generate_page(
         # --- (로깅 추가 끝) ---
         
         print("✅ Validator 자동 보정 완료!")
-        
-        # 2. 횟수 차감 (AI 호출 및 Validator 보정 성공 후)
-        try:
-            auth_service.supabase.table('pro_new_page').update({'remaining_generations': new_credits}).eq('id', current_user['id']).execute()
-            print(f"✅ 횟수 차감 완료. 남은 횟수: {new_credits}")
-        except Exception as e:
-            print(f"🚨 경고: AI 생성은 성공했으나 DB 횟수 차감에 실패했습니다: {e}")
-            pass
-
+    
+        # 5. 최종 결과 반환
+        print("✅ 자동 보정된 layout_data 포함하여 클라이언트에 응답 전송")
+        return {
+            "message": "JSON 레이아웃 생성이 성공적으로 완료되었습니다.",
+            "layout_data": fixed_layout,
+            "remaining_generations": new_credits
+        }
     except Exception as e:
-        print(f"🚨 오류: AI 응답 처리 또는 Validator 실행 중 예외 발생: {e}")
+        # 🚨 [보안] 생성 중 에러 발생 시 '자동 환불'
+        print(f"🚨 생성 실패로 인한 환불 처리: {e}")
+        refund_credits = new_credits + 1
+        auth_service.supabase.table('pro_new_page').update({'remaining_generations': refund_credits}).eq('id', current_user['id']).execute()
+        
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"AI 서비스 호출 또는 응답 처리 중 오류가 발생했습니다"
+            detail="AI 생성 중 오류가 발생하여 횟수가 자동 환불되었습니다."
         )
-    
-    # 5. 최종 결과 반환
-    print("✅ 자동 보정된 layout_data 포함하여 클라이언트에 응답 전송")
-    return {
-        "message": "JSON 레이아웃 생성이 성공적으로 완료되었습니다.",
-        "layout_data": fixed_layout,
-        "remaining_generations": new_credits
-    }
 # ==========================================
 # 👇 [신규] 앱 자동 업데이트를 위한 API 엔드포인트
 # ==========================================
@@ -459,34 +477,22 @@ def check_app_version():
     새 버전을 배포할 때마다 아래 'version'과 'download_url'을 수정하면 됩니다.
     """
     return {
-        "version": "0.0.3",  # 🔥 배포할 최신 버전 (version.txt보다 높아야 업데이트됨)
+        "version": "0.0.5",  # 🔥 배포할 최신 버전 (version.txt보다 높아야 업데이트됨)
         
         # 👇 [중요] 아까 GitHub Releases에서 복사한 '링크 주소'를 여기에 넣으세요!
-        "download_url": "https://github.com/ProjectResolutionsOffice/new_create_page_main/releases/download/v0.0.3/update_v0.0.3.zip",
+        "download_url": "https://github.com/ProjectResolutionsOffice/new_create_page_main/releases/download/v0.0.5/update_v0.0.5.zip",
         
         "force_update": True # True면 강제 업데이트 권장 알림
     }
 
-@app.get("/api/user/info")
-def get_user_info(email: str):
+@app.get("/api/user/info", response_model=user_schemas.UserInfo)
+def get_user_info(current_user: dict = Depends(auth_service.get_current_user)):
     """
-    사용자의 이메일을 받아서, 남은 횟수(remaining_generations)와 플랜 정보를 돌려줍니다.
+    [보안 업데이트] 이제 이메일 파라미터 없이, 토큰(로그인 정보)으로 내 정보를 조회합니다.
+    남의 정보를 훔쳐볼 수 없습니다.
     """
-    try:
-        # Supabase에서 사용자 조회
-        response = auth_service.supabase.table('pro_new_page').select('*').eq('email', email).execute()
-        
-        if not response.data:
-            raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
-        
-        user_data = response.data[0]
-        
-        return {
-            "email": user_data['email'],
-            "remaining_generations": user_data.get('remaining_generations', 0),
-            "plan_type": user_data.get('plan_type', 'free')
-        }
-        
-    except Exception as e:
-        print(f"사용자 정보 조회 실패: {e}")
-        raise HTTPException(status_code=500, detail="서버 오류 발생")
+    return {
+        "email": current_user['email'],
+        "remaining_generations": current_user['remaining_generations'],
+        "plan_type": current_user.get('plan_type', 'free')
+    }
